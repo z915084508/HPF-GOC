@@ -1,7 +1,9 @@
 import os
 import time
 import threading
-from typing import Dict, Tuple, Optional
+import json
+import math
+from typing import Dict, Tuple, Optional, List, Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -18,6 +20,22 @@ VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 # ✅ Correct VATSIM Spain CDM entry
 CDM_URL_TEMPLATE = "https://cdm.vatsimspain.es/CDMViewer.php?airport={icao}"
 
+# ---- STAND @100NM FEATURE ----
+TRIGGER_NM = 100.0
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GATES_DIR = os.path.join(BASE_DIR, "gates")
+STATE_DIR = os.path.join(BASE_DIR, "state")
+SENT_FLAGS_PATH = os.path.join(STATE_DIR, "sent_flags.json")
+LRU_STATE_PATH = os.path.join(STATE_DIR, "lru_state.json")
+
+# 机场坐标（用于距离计算）
+AIRPORT_COORDS = {
+    "LEVC": (39.4893, -0.4816),
+    "LEBL": (41.2971, 2.0785),
+    "LEMD": (40.4719, -3.5626),
+}
+
 # =========================
 # ENV
 # =========================
@@ -27,6 +45,29 @@ GOC_STATION = os.getenv("GOC_STATION", "HPFGOC")
 
 if not HOPPIE_LOGON:
     raise RuntimeError("Missing HOPPIE_LOGON in .env")
+
+
+# =========================
+# FS HELPERS
+# =========================
+def ensure_dirs():
+    os.makedirs(GATES_DIR, exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
+
+def load_json(path: str, default: Any):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def save_json(path: str, data: Any):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 # =========================
@@ -72,25 +113,155 @@ def hoppie_telex(to_callsign: str, message: str) -> str:
 
 
 # =========================
+# GEO
+# =========================
+def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 3440.065  # Earth radius in NM
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+def normalize_callsign(cs: str) -> str:
+    return (cs or "").strip().upper()
+
+def callsign_prefix(cs: str) -> str:
+    cs = normalize_callsign(cs)
+    pref = ""
+    for ch in cs:
+        if ch.isalpha():
+            pref += ch
+        else:
+            break
+    return pref
+
+
+# =========================
+# GATE RULE ENGINE (JSON)
+# =========================
+def load_gate_rules(icao: str) -> Dict[str, Any]:
+    path = os.path.join(GATES_DIR, f"{icao}.json")
+    doc = load_json(path, default={})
+    if not doc:
+        raise FileNotFoundError(f"Missing gate rules: {path}")
+    return doc
+
+def match_rule(rule: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
+    m = rule.get("match", {}) or {}
+
+    pref_list = m.get("callsign_prefix")
+    if isinstance(pref_list, list) and pref_list:
+        if ctx["prefix"] not in [p.upper() for p in pref_list]:
+            return False
+
+    ac_list = m.get("aircraft_icao")
+    if isinstance(ac_list, list) and ac_list:
+        if ctx["aircraft_icao"] not in [a.upper() for a in ac_list]:
+            return False
+
+    return True
+
+def select_stand_from_pool(airport: str, candidates: List[str], lru_state: Dict[str, Any]) -> str:
+    now = int(time.time())
+    airport_map = lru_state.setdefault(airport, {})
+
+    best = None
+    best_ts = None
+    for stand in candidates:
+        s = stand.strip().upper()
+        ts = int(airport_map.get(s, 0))
+        if best is None or ts < best_ts:
+            best = s
+            best_ts = ts
+
+    airport_map[best] = now
+    return best
+
+def predict_stand(airport: str, callsign: str, aircraft_icao: str, lru_state: Dict[str, Any]) -> Dict[str, str]:
+    doc = load_gate_rules(airport)
+    rules = doc.get("rules", []) or []
+    rules_sorted = sorted(rules, key=lambda r: int(r.get("priority", 0)), reverse=True)
+
+    ctx = {
+        "callsign": normalize_callsign(callsign),
+        "prefix": callsign_prefix(callsign),
+        "aircraft_icao": (aircraft_icao or "").strip().upper(),
+    }
+
+    for rule in rules_sorted:
+        if not match_rule(rule, ctx):
+            continue
+
+        stands = rule.get("stands", {}) or {}
+        stype = (stands.get("type") or "pool").strip().lower()
+        label = (rule.get("label") or rule.get("name") or "APRON").strip()
+
+        if stype == "fixed":
+            s = (stands.get("stand") or "").strip().upper()
+            if s:
+                return {"stand": s, "label": label}
+
+        candidates = stands.get("candidates") or []
+        candidates = [c.strip().upper() for c in candidates if str(c).strip()]
+        if candidates:
+            stand = select_stand_from_pool(airport, candidates, lru_state)
+            return {"stand": stand, "label": label}
+
+    return {"stand": "TBD", "label": "APRON"}
+
+def build_stand_telex(arr: str, stand: str, label: str) -> str:
+    return (
+        f"HPF GOC ARR STAND\r\n"
+        f"AIRPORT {arr}\r\n"
+        f"EST STAND {stand} ({label})\r\n"
+        f"SUBJ CHG"
+    )
+
+
+# =========================
 # VATSIM
 # =========================
-def fetch_vatsim_hpf() -> Dict[str, Dict[str, str]]:
-    """Return {CALLSIGN: {dep, arr}} for all online HPF* pilots."""
+def fetch_vatsim_hpf() -> Dict[str, Dict[str, Any]]:
+    """
+    Return:
+    {
+      CALLSIGN: {
+        dep, arr,
+        lat, lon,
+        aircraft_icao
+      }
+    }
+    for all online HPF* pilots.
+    """
     r = httpx.get(VATSIM_URL, timeout=20, follow_redirects=True)
     r.raise_for_status()
     data = r.json()
 
-    flights: Dict[str, Dict[str, str]] = {}
+    flights: Dict[str, Dict[str, Any]] = {}
     for p in data.get("pilots", []):
-        cs = (p.get("callsign") or "").upper().strip()
+        cs = normalize_callsign(p.get("callsign"))
         if not cs.startswith("HPF"):
             continue
 
         fp = p.get("flight_plan") or {}
-        dep = (fp.get("departure") or "").upper().strip()
-        arr = (fp.get("arrival") or "").upper().strip()
+        dep = normalize_callsign(fp.get("departure"))
+        arr = normalize_callsign(fp.get("arrival"))
 
-        flights[cs] = {"dep": dep, "arr": arr}
+        lat = p.get("latitude")
+        lon = p.get("longitude")
+
+        aircraft_raw = (fp.get("aircraft") or "").strip().upper()  # e.g. "A20N/M"
+        aircraft_icao = aircraft_raw.split("/")[0].strip().upper() if aircraft_raw else ""
+
+        flights[cs] = {
+            "dep": dep,
+            "arr": arr,
+            "lat": float(lat) if lat is not None else None,
+            "lon": float(lon) if lon is not None else None,
+            "aircraft_icao": aircraft_icao,
+        }
 
     return flights
 
@@ -118,7 +289,6 @@ def fetch_cdm_airport(apt: str) -> Dict[str, str]:
     if not rows:
         return {}
 
-    # Try to find TSAT column index from header
     header_cells = rows[0].find_all(["th", "td"])
     headers = [c.get_text(strip=True).upper() for c in header_cells]
     tsat_idx = None
@@ -130,11 +300,9 @@ def fetch_cdm_airport(apt: str) -> Dict[str, str]:
         if "TSAT" in h:
             tsat_idx = i
 
-    # Fallbacks (common layout): callsign first col, TSAT around 4/5
     if callsign_idx is None:
         callsign_idx = 0
     if tsat_idx is None:
-        # many CDM tables put TSAT at 5th column (index 4)
         tsat_idx = 4
 
     tsats: Dict[str, str] = {}
@@ -146,7 +314,7 @@ def fetch_cdm_airport(apt: str) -> Dict[str, str]:
         if callsign_idx >= len(cols):
             continue
 
-        callsign = (cols[callsign_idx] or "").upper().strip()
+        callsign = normalize_callsign(cols[callsign_idx])
         if not callsign:
             continue
 
@@ -173,17 +341,21 @@ def tsat_state_for(cs: str, apt: str, cdm_tables: Dict[str, Dict[str, str]]) -> 
 # WATCHER (AUTO)
 # =========================
 def watcher_loop():
+    ensure_dirs()
+
+    sent_flags: Dict[str, Any] = load_json(SENT_FLAGS_PATH, default={})
+    lru_state: Dict[str, Any] = load_json(LRU_STATE_PATH, default={})
+
     print("HPF GOC – AUTO watcher running\n")
     print("Commands:")
     print("  telex <CALLSIGN> <MESSAGE...>   send TELEX")
     print("  ping <CALLSIGN>                send test TELEX")
     print("  help                           show help\n")
     print(f"Airports: {', '.join(AIRPORTS)} | Poll: {POLL_SECONDS}s\n")
+    print(f"Stand trigger: <= {TRIGGER_NM:.0f}NM to ARR for {', '.join(AIRPORTS)} (one-shot)\n")
 
     last: Dict[Tuple[str, str], Tuple[str, Optional[str]]] = {}  # (cs, apt) -> (state, tsat)
     welcomed = set()  # callsigns welcomed once per process
-
-    # prevent CDM error spam: only print if message changes
     last_cdm_error: Dict[str, str] = {}
 
     while True:
@@ -208,6 +380,8 @@ def watcher_loop():
                     print(f"[CDM] {apt} error: {msg}")
                     last_cdm_error[apt] = msg
                 cdm_tables[apt] = {}
+
+        changed_state_files = False
 
         # --- FIRST ONLINE WELCOME ---
         for cs, info in online.items():
@@ -242,27 +416,64 @@ def watcher_loop():
             prev = last.get(key)
             curr = (state, tsat)
 
-            if prev == curr:
+            if prev != curr:
+                last[key] = curr
+
+                if state == "TSAT_ASSIGNED":
+                    print(f"[TSAT] {cs} @ {dep}: {tsat}")
+
+                    msg = (
+                        "HPF GOC TSAT UPDATE\r\n"
+                        f"AIRPORT {dep}\r\n"
+                        f"CALLSIGN {cs}\r\n"
+                        f"TSAT {tsat}"
+                    )
+                    try:
+                        resp = hoppie_telex(cs, msg)
+                        print(f"[TELEX] TSAT sent to {cs} ({resp})")
+                    except Exception as e:
+                        print(f"[TELEX] TSAT failed to {cs}: {e}")
+                else:
+                    print(f"[TSAT] {cs} @ {dep}: {state}")
+
+        # --- ARR STAND @100NM (ONE-SHOT) ---
+        for cs, info in online.items():
+            arr = info.get("arr", "")
+            if arr not in AIRPORTS:
                 continue
 
-            last[key] = curr
+            lat = info.get("lat")
+            lon = info.get("lon")
+            if lat is None or lon is None:
+                continue
 
-            if state == "TSAT_ASSIGNED":
-                print(f"[TSAT] {cs} @ {dep}: {tsat}")
+            if arr not in AIRPORT_COORDS:
+                continue
 
-                msg = (
-                    "HPF GOC TSAT UPDATE\r\n"
-                    f"AIRPORT {dep}\r\n"
-                    f"CALLSIGN {cs}\r\n"
-                    f"TSAT {tsat}"
-                )
+            apt_lat, apt_lon = AIRPORT_COORDS[arr]
+            dist_nm = haversine_nm(lat, lon, apt_lat, apt_lon)
+
+            sent_key = f"{cs}|{arr}|stand100nm_sent"
+            if sent_flags.get(sent_key):
+                continue
+
+            if dist_nm <= TRIGGER_NM:
                 try:
+                    pred = predict_stand(arr, cs, info.get("aircraft_icao", ""), lru_state)
+                    msg = build_stand_telex(arr, pred["stand"], pred["label"])
                     resp = hoppie_telex(cs, msg)
-                    print(f"[TELEX] TSAT sent to {cs} ({resp})")
+                    print(f"[STAND] sent to {cs} ARR {arr} ({dist_nm:.0f}NM) -> {pred['stand']} ({resp})")
+
+                    sent_flags[sent_key] = True
+                    changed_state_files = True
+                except FileNotFoundError as e:
+                    print(f"[STAND] missing gate file for {arr}: {e}")
                 except Exception as e:
-                    print(f"[TELEX] TSAT failed to {cs}: {e}")
-            else:
-                print(f"[TSAT] {cs} @ {dep}: {state}")
+                    print(f"[STAND] failed to {cs} ARR {arr}: {e}")
+
+        if changed_state_files:
+            save_json(SENT_FLAGS_PATH, sent_flags)
+            save_json(LRU_STATE_PATH, lru_state)
 
         time.sleep(POLL_SECONDS)
 

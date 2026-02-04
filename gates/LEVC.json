@@ -1,0 +1,15 @@
+{
+  "airport": "LEVC",
+  "rules": [
+    {
+      "name": "Default LEVC pool",
+      "label": "MAIN APRON",
+      "priority": 10,
+      "match": {},
+      "stands": {
+        "type": "pool",
+        "candidates": ["2", "3", "4", "5", "35","41","42","43","34"]
+      }
+    }
+  ]
+}

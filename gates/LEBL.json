@@ -1,0 +1,28 @@
+{
+  "airport": "LEBL",
+  "rules": [
+    {
+      "name": "HPF A320 family",
+      "label": "T1 CONTACT",
+      "priority": 100,
+      "match": {
+        "callsign_prefix": ["HPF"],
+        "aircraft_icao": ["A319", "A320", "A321", "A20N"]
+      },
+      "stands": {
+        "type": "pool",
+        "candidates": ["224", "228", "232", "236", "240"]
+      }
+    },
+    {
+      "name": "Default LEBL remote",
+      "label": "REMOTE",
+      "priority": 10,
+      "match": {},
+      "stands": {
+        "type": "pool",
+        "candidates": ["302", "334", "342", "340"]
+      }
+    }
+  ]
+}

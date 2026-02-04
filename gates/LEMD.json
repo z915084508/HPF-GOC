@@ -1,0 +1,28 @@
+{
+  "airport": "LEMD",
+  "rules": [
+    {
+      "name": "HPF narrowbody",
+      "label": "T4",
+      "priority": 100,
+      "match": {
+        "callsign_prefix": ["HPF"],
+        "aircraft_icao": ["A319", "A320", "A321", "A20N"]
+      },
+      "stands": {
+        "type": "pool",
+        "candidates": ["T4-352", "T4-336", "T4-370", "T4-366"]
+      }
+    },
+    {
+      "name": "Default",
+      "label": "APRON",
+      "priority": 10,
+      "match": {},
+      "stands": {
+        "type": "pool",
+        "candidates": ["436", "438", "428", "422"]
+      }
+    }
+  ]
+}
