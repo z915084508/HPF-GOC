@@ -4,7 +4,8 @@ from bs4 import BeautifulSoup
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 AIRPORTS = ["LEVC", "LEBL", "LEMD"]
-CDM_URL = "https://cdm.vatsimspain.es/CDMViewer.php?airport={icao}"
+# 替换为新的API地址
+CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={icao}"
 
 POLL_SECONDS = 20
 
@@ -28,17 +29,15 @@ def fetch_cdm_airport(icao: str):
     url = CDM_URL.format(icao=icao)
     r = httpx.get(url, timeout=15)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+    # 新接口返回JSON数组，移除BeautifulSoup表格解析
+    data_list = r.json()
 
     out = {}
-    for tr in soup.select("tr"):
-        cols = [td.get_text(strip=True) for td in tr.select("td")]
-        if len(cols) < 5:
-            continue
-        callsign = cols[0].upper()
-        tsat = (cols[4] or "").strip()
+    for item in data_list:
+        callsign = str(item.get("callsign", "")).upper()
+        tsat = str(item.get("tsat", "")).strip()
         if callsign:
-            out[callsign] = tsat  # may be '----'
+            out[callsign] = tsat  # 依旧可能返回'----'
     return out
 
 def tsat_state_for(cs: str, base: str, cdm_tables: dict):

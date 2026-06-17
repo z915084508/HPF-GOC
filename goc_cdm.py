@@ -3,7 +3,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 AIRPORTS = ["LEVC", "LEBL", "LEMD"]
-CDM_URL = "https://cdm.vatsimspain.es/CDMViewer.php?airport={icao}"
+CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={icao}"
 
 def fetch_cdm(icao: str) -> dict:
     """
