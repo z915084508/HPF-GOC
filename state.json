@@ -1,0 +1,11 @@
+{
+  "welcome_sent": {
+    "HPF36MV": true,
+    "HPF35MV": true
+  },
+  "arr_pkg_sent": {},
+  "last_tsat": {
+    "HPF36MV|LEBL": "162000",
+    "HPF35MV|LEBL": "163200"
+  }
+}

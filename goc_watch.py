@@ -1,11 +1,10 @@
 import time
 import httpx
-from bs4 import BeautifulSoup
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 AIRPORTS = ["LEVC", "LEBL", "LEMD"]
-# 替换为新的API地址
-CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={icao}"
+# 修正参数占位符名称
+CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={airport}"
 
 POLL_SECONDS = 20
 
@@ -26,18 +25,19 @@ def fetch_vatsim_hpf():
     return hpf
 
 def fetch_cdm_airport(icao: str):
-    url = CDM_URL.format(icao=icao)
+    url = CDM_URL.format(airport=icao)
     r = httpx.get(url, timeout=15)
     r.raise_for_status()
-    # 新接口返回JSON数组，移除BeautifulSoup表格解析
     data_list = r.json()
 
     out = {}
     for item in data_list:
-        callsign = str(item.get("callsign", "")).upper()
-        tsat = str(item.get("tsat", "")).strip()
+        callsign = str(item.get("callsign", "")).upper().strip()
+        # 嵌套读取cdmData内的tsat字段
+        cdm_data = item.get("cdmData", {})
+        tsat = str(cdm_data.get("tsat", "")).strip()
         if callsign:
-            out[callsign] = tsat  # 依旧可能返回'----'
+            out[callsign] = tsat
     return out
 
 def tsat_state_for(cs: str, base: str, cdm_tables: dict):
@@ -45,7 +45,7 @@ def tsat_state_for(cs: str, base: str, cdm_tables: dict):
     if cs not in table:
         return ("NOT_IN_CDM", None)
     raw = table[cs]
-    if raw and raw != "----":
+    if raw and raw not in ("----", "", "-", "N/A"):
         return ("TSAT_ASSIGNED", raw)
     return ("IN_CDM_BUT_NO_TSAT", None)
 

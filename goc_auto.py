@@ -16,7 +16,7 @@ BASE_AIRPORTS = ["LEVC", "LEBL", "LEMD"]
 POLL_SECONDS = 20
 
 VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
-CDM_URL_TEMPLATE = "https://viff-system.network/ifps/cdmAirport?airport={icao}"
+CDM_URL_TEMPLATE = "https://viff-system.network/ifps/cdmAirport?airport={}"
 # Airport coordinates for ARR distance (extend later if needed)
 AIRPORT_COORDS = {
     "LEVC": (39.4893, -0.4816),
@@ -200,23 +200,21 @@ def fetch_vatsim_hpf() -> Dict[str, Dict[str, Any]]:
 
 
 # =========================
-# CDM / TSAT
+# CDM / TSAT【已完整修复参数+嵌套cdmData读取】
 # =========================
 def fetch_cdm_tsats(apt: str) -> Dict[str, str]:
-    url = CDM_URL_TEMPLATE.format(icao=apt)
+    url = CDM_URL_TEMPLATE.format(apt)
     r = httpx.get(url, timeout=20, follow_redirects=True)
     r.raise_for_status()
 
-    # 新接口直接返回JSON数组，无需BeautifulSoup解析表格
     data_list = r.json()
     tsats: Dict[str, str] = {}
 
     for item in data_list:
-        # 对应旧表格字段：callsign呼号、tsat时间
         cs = str(item.get("callsign", "")).upper().strip()
-        tsat = str(item.get("tsat", "")).strip()
+        cdm_data = item.get("cdmData", {})
+        tsat = str(cdm_data.get("tsat", "")).strip()
 
-        # 和原来一模一样的过滤规则，完全不变
         if not cs:
             continue
         if tsat in ("", "-", "—", "N/A", "NA", "-----"):
@@ -233,7 +231,7 @@ def fetch_cdm_tsats(apt: str) -> Dict[str, str]:
 def build_welcome(cs: str) -> str:
     return (
         "HPF GOC\r\n"
-        "WELCOME / IZU\r\n"
+        "WELCOME \r\n"
         f"CALLSIGN {cs}\r\n"
         "GOC READY AND ONLINE\r\n"
         "SEND READY WHEN PUSH-READY\r\n"
@@ -254,11 +252,13 @@ def build_arr_pkg(cs: str, arr: str, dnm: float, stand: str) -> str:
 
 
 def build_tsat(dep: str, tsat: str) -> str:
+    # 6位hhmmss 截取前4位hhmm，标准4位TSAT格式发给机组
+    tsat_short = tsat[:4]
     return (
         "HPF GOC\r\n"
         "TSAT UPDATE\r\n"
         f"APT {dep}\r\n"
-        f"TSAT {tsat}"
+        f"TSAT {tsat_short}"
     )
 
 
@@ -345,7 +345,7 @@ def watcher_loop():
     print("  ping <CALLSIGN>                send test TELEX")
     print("  help                           show help\n")
     print(f"Airports (ARR/TSAT scope): {', '.join(BASE_AIRPORTS)} | Poll: {POLL_SECONDS}s")
-    print("WELCOME (IZU): first time seen + on ground-ish -> send once\n")
+    print("WELCOME : first time seen + on ground-ish -> send once\n")
 
     last_cdm_err: Dict[str, str] = {}
 

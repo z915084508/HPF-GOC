@@ -4,9 +4,9 @@ VATSIM_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 BASES = {"LEVC", "LEBL", "LEMD"}
 
 def is_on_ground(pilot: dict) -> bool:
-    alt = pilot.get("altitude", 0)
-    gs = pilot.get("groundspeed", 0)
-    return alt < 200 and gs < 40
+    alt = float(pilot.get("altitude", 0) or 0)
+    gs = float(pilot.get("groundspeed", 0) or 0)
+    return alt <= 2500 and gs <= 60
 
 print("HPF GOC – fetching VATSIM data...")
 

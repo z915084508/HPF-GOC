@@ -1,30 +1,26 @@
-
 import httpx
-from bs4 import BeautifulSoup
 
 AIRPORTS = ["LEVC", "LEBL", "LEMD"]
-CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={icao}"
+CDM_URL = "https://viff-system.network/ifps/cdmAirport?airport={airport}"
 
 def fetch_cdm(icao: str) -> dict:
     """
     Return {callsign: tsat}
     """
-    url = CDM_URL.format(icao=icao)
+    url = CDM_URL.format(airport=icao)
     r = httpx.get(url, timeout=15)
     r.raise_for_status()
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    data_list = r.json()
     rows = {}
 
-    for tr in soup.select("tr"):
-        cols = [td.get_text(strip=True) for td in tr.select("td")]
-        if len(cols) < 5:
-            continue
+    for item in data_list:
+        callsign = str(item.get("callsign", "")).upper().strip()
+        # 嵌套读取内层cdmData
+        cdm_data = item.get("cdmData", {})
+        tsat = str(cdm_data.get("tsat", "")).strip()
 
-        callsign = cols[0].upper()
-        tsat = cols[4]
-
-        if callsign.startswith("HPF") and tsat and tsat != "----":
+        if callsign.startswith("HPF") and tsat and tsat not in ("----", "", "-", "N/A"):
             rows[callsign] = tsat
 
     return rows
