@@ -1,0 +1,24 @@
+[Unit]
+Description=Hispafly Ground Operations Center
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hpf-goc
+Group=hpf-goc
+WorkingDirectory=/opt/hpf-goc
+EnvironmentFile=/etc/hpf-goc.env
+Environment=GOC_HEADLESS=1
+Environment=GOC_STATE_FILE=/var/lib/hpf-goc/state.json
+ExecStart=/opt/hpf-goc/.venv/bin/python -u /opt/hpf-goc/goc_auto.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hpf-goc
+
+[Install]
+WantedBy=multi-user.target

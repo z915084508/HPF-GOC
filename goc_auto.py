@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import threading
@@ -38,7 +39,7 @@ STAND_POOLS = {
     "LEMD": ["T4-351", "T4-352", "T4-353", "T4-354"],
 }
 
-STATE_FILE = "state.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # =========================
 # ENV
@@ -46,6 +47,8 @@ STATE_FILE = "state.json"
 load_dotenv()
 HOPPIE_LOGON = os.getenv("HOPPIE_LOGON")
 GOC_STATION = os.getenv("GOC_STATION", "HPFGOC").strip()
+STATE_FILE = os.getenv("GOC_STATE_FILE", os.path.join(BASE_DIR, "state.json"))
+HEARTBEAT_FILE = os.getenv("GOC_HEARTBEAT_FILE", "").strip()
 
 if not HOPPIE_LOGON:
     raise RuntimeError("Missing HOPPIE_LOGON in .env")
@@ -95,6 +98,19 @@ def save_state():
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[STATE] save failed: {e}")
+
+
+def write_heartbeat():
+    if not HEARTBEAT_FILE:
+        return
+    try:
+        heartbeat_dir = os.path.dirname(HEARTBEAT_FILE)
+        if heartbeat_dir:
+            os.makedirs(heartbeat_dir, exist_ok=True)
+        with open(HEARTBEAT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+    except Exception as e:
+        print(f"[HEALTH] heartbeat failed: {e}")
 
 
 # =========================
@@ -350,6 +366,7 @@ def watcher_loop():
     last_cdm_err: Dict[str, str] = {}
 
     while True:
+        write_heartbeat()
         # VATSIM
         try:
             flights = fetch_vatsim_hpf()
@@ -436,6 +453,10 @@ def cli_loop():
 # =========================
 if __name__ == "__main__":
     load_state()
-    t = threading.Thread(target=watcher_loop, daemon=True)
-    t.start()
-    cli_loop()
+    if sys.stdin.isatty() and os.getenv("GOC_HEADLESS", "0") != "1":
+        t = threading.Thread(target=watcher_loop, daemon=True)
+        t.start()
+        cli_loop()
+    else:
+        print("> HPF GOC running in headless server mode", flush=True)
+        watcher_loop()

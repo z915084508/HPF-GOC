@@ -1,0 +1,18 @@
+services:
+  goc:
+    build: .
+    container_name: hpf-goc
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - goc-data:/app/data
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  goc-data:
